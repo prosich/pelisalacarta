@@ -119,7 +119,7 @@ def find_and_set_infoLabels(item):
 
     if not item.contentSeason:
         p_dialog.update(50, "Buscando información de la serie", "Obteniendo resultados...")
-    results = otvdb_global.get_list_results()
+    results, info_load = otvdb_global.get_list_results()
     logger.debug("results es %s" % results)
 
     if not item.contentSeason:
@@ -143,6 +143,13 @@ def find_and_set_infoLabels(item):
     if tvdb_result:
         infoLabels['tvdb_id'] = tvdb_result['id']
         infoLabels['url_scraper'] = ["http://thetvdb.com/index.php?tab=series&id=%s" % infoLabels['tvdb_id']]
+        if not info_load:
+            if otvdb_global.get_id() != infoLabels['tvdb_id']:
+                otvdb_global = Tvdb(tvdb_id=infoLabels['tvdb_id'])
+            otvdb_global.get_images(infoLabels['tvdb_id'], image="poster")
+            otvdb_global.get_images(infoLabels['tvdb_id'], image="fanart")
+            otvdb_global.get_tvshow_cast(infoLabels['tvdb_id'])
+
         item.infoLabels = infoLabels
         set_infoLabels_item(item)
 
@@ -212,7 +219,6 @@ def set_infoLabels_item(item):
                 if not list_episodes:
                     list_episodes = otvdb_global.get_list_episodes(otvdb_global, otvdb_global.get_id(), page)
                     import threading
-
                     semaforo = threading.Semaphore(20)
                     l_hilo = list()
 
@@ -274,31 +280,31 @@ def set_infoLabels_item(item):
             item.infoLabels['mediatype'] = 'season'
             data_season = otvdb_global.get_images(otvdb_global.get_id(), "season", int_season)
 
-            if data_season and 'image_season' in data_season:
-                item.thumbnail = HOST_IMAGE + data_season['image_season'][0]['fileName']
+            if data_season and 'image_season_%s' % int_season in data_season:
+                item.thumbnail = HOST_IMAGE + data_season['image_season_' % int_season][0]['fileName']
 
                 return len(item.infoLabels)
 
     # Buscar...
     else:
-        otvdb = copy.copy(otvdb_global)
         # Busquedas por ID...
-        if item.infoLabels['tvdb_id']:
-            otvdb = Tvdb(tvdb_id=item.infoLabels['tvdb_id'])
+        if (not otvdb_global or otvdb_global.get_id() != item.infoLabels['tvdb_id']) \
+            and item.infoLabels['tvdb_id']:
+            otvdb_global = Tvdb(tvdb_id=item.infoLabels['tvdb_id'])
 
-        elif item.infoLabels['imdb_id']:
-            otvdb = Tvdb(imdb_id=item.infoLabels['imdb_id'])
+        elif not otvdb_global and item.infoLabels['imdb_id']:
+            otvdb_global = Tvdb(imdb_id=item.infoLabels['imdb_id'])
 
-        elif item.infoLabels['zap2it_id']:
-            otvdb = Tvdb(zap2it_id=item.infoLabels['zap2it_id'])
+        elif not otvdb_global and item.infoLabels['zap2it_id']:
+            otvdb_global = Tvdb(zap2it_id=item.infoLabels['zap2it_id'])
 
         # No se ha podido buscar por ID... se hace por título
-        if otvdb is None:
-            otvdb = Tvdb(search=item.infoLabels['tvshowtitle'])
+        if otvdb_global is None:
+            otvdb_global = Tvdb(search=item.infoLabels['tvshowtitle'])
 
-        if otvdb and otvdb.get_id():
+        if otvdb_global and otvdb_global.get_id():
+            __leer_datos(otvdb_global)
             # La busqueda ha encontrado un resultado valido
-            __leer_datos(otvdb)
             return len(item.infoLabels)
 
 
@@ -341,7 +347,6 @@ def completar_codigos(item):
                 url_scraper = "https://www.themoviedb.org/tv/%s" % item.infoLabels['tmdb_id']
                 item.infoLabels['url_scraper'].append(url_scraper)
                 break
-
 
 
 class Tvdb:
@@ -792,7 +797,7 @@ class Tvdb:
                 self.list_results = resultado
                 self.result = resultado[index]
 
-    def __get_by_id(self, _id, lang=DEFAULT_LANG):
+    def __get_by_id(self, _id, lang=DEFAULT_LANG, from_get_list=False):
         """
         Obtiene los datos de una serie por identificador.
         @param _id: código de la serie
@@ -868,17 +873,16 @@ class Tvdb:
                 return {}
             else:
                 resultado1 = dict_html["data"]
+                if not resultado1 and from_get_list:
+                    return self.__get_by_id(_id, "en")
 
                 logger.debug("resultado %s" % dict_html)
-
-                resultado2 = self.get_images(_id, image="poster")
-                resultado3 = self.get_images(_id, image="fanart")
-                resultado4 = self.__get_tvshow_cast(_id, lang)
+                resultado2 = {"image_poster": [{'keyType': 'poster', 'fileName': 'posters/%s-1.jpg' % _id}]}
+                resultado3 = {"image_fanart": [{'keyType': 'fanart', 'fileName': 'fanart/original/%s-1.jpg' % _id}]}
 
                 resultado = resultado1.copy()
                 resultado.update(resultado2)
                 resultado.update(resultado3)
-                resultado.update(resultado4)
 
                 logger.debug("resultado total %s" % resultado)
                 self.list_results = [resultado]
@@ -886,8 +890,8 @@ class Tvdb:
 
         return resultado
 
-    @staticmethod
-    def get_images(_id, image="poster", season=1, lang="en"):
+
+    def get_images(self, _id, image="poster", season=1, lang="en"):
         """
         Obtiene un tipo de imagen para una serie para un idioma.
         @param _id: identificador de la serie
@@ -903,6 +907,9 @@ class Tvdb:
         """
         logger.info()
 
+        if self.result.get('image_season_%s' % season):
+            return self.result['image_season_%s' % season]
+
         params = {}
         if image == "poster":
             params["keyType"] = "poster"
@@ -912,6 +919,7 @@ class Tvdb:
         elif image == "season":
             params["keyType"] = "season"
             params["subKey"] = "%s" % season
+            image += "_%s" % season
 
         try:
 
@@ -936,11 +944,12 @@ class Tvdb:
             dict_html = jsontools.load_json(html)
 
             dict_html["image_" + image] = dict_html.pop("data")
+            self.result.update(dict_html)
 
             return dict_html
 
-    @staticmethod
-    def __get_tvshow_cast(_id, lang=DEFAULT_LANG):
+
+    def get_tvshow_cast(self, _id, lang=DEFAULT_LANG):
         """
         obtiene el casting de una serie
         @param _id: codigo de la serie
@@ -964,7 +973,8 @@ class Tvdb:
         dict_html = jsontools.load_json(html)
 
         dict_html["cast"] = dict_html.pop("data")
-        return dict_html
+        self.result.update(dict_html)
+
 
     def get_id(self):
         """
@@ -987,18 +997,30 @@ class Tvdb:
         # si tenemos un resultado y tiene seriesName, ya tenemos la info de la serie, no hace falta volver a buscar
         if len(self.list_results) == 1 and "seriesName" in self.result:
             list_results.append(self.result)
+            info_load = True
         else:
-            for e in self.list_results:
-                # logger.info("e es: %s" % e)
-                # logger.info("id es: %s" % e['id'])
-                dict_html = self.__get_by_id(e['id'])
-                # todo revisar si hace falta
-                if not dict_html:
-                    dict_html = self.__get_by_id(e['id'], "en")
-                # todo mirar de ordenar por el año
-                list_results.append(dict_html)
+            import threading
+            semaforo = threading.Semaphore(20)
+            l_hilo = list()
+            r_list = list()
+            def sub_thread(_id, i):
+                semaforo.acquire()
+                ret = self.__get_by_id(_id, DEFAULT_LANG, True)
+                semaforo.release()
+                r_list.append((ret, i))
 
-        return list_results
+            for i, e in enumerate(self.list_results):
+                t = threading.Thread(target=sub_thread, args=(e["id"], i))
+                t.start()
+                l_hilo.append(t)
+
+            for x in l_hilo:
+                x.join()
+
+            r_list.sort(key=lambda i: i[1])
+            list_results = [ii[0] for ii in r_list]
+            info_load = False
+        return list_results, info_load
 
     def get_infoLabels(self, infoLabels=None, origen=None):
         """
